@@ -1,28 +1,23 @@
-use battery::{self, units::ratio};
-use jay_config::keyboard::syms::SYM_Sys_Req;
-use uom::{
-    fmt::DisplayStyle::*,
-    si::f32::*,
-    si::time::{minute, second},
-    Conversion,
+use battery::{self};
+use jay_config::{
+    keyboard::parse_keymap,
+    video::{get_connector, on_connector_connected, on_new_connector, DrmDevice},
 };
+use uom::{fmt::DisplayStyle::*, si::f32::*, si::time::minute};
 
 use sysinfo::{CpuExt, CpuRefreshKind, RefreshKind, System, SystemExt};
 use {
     chrono::{format::StrftimeItems, Local},
     jay_config::{
         config,
-        embedded::grab_input_device,
         exec::Command,
         get_workspace,
-        input::capability::{CAP_KEYBOARD, CAP_POINTER},
         input::{get_seat, input_devices, on_new_input_device, InputDevice, Seat},
         keyboard::{
-            mods::{Modifiers, ALT, CTRL, MOD1, MOD4, SHIFT},
+            mods::{Modifiers, ALT, CTRL, MOD4, MOD5, SHIFT},
             syms::{
-                SYM_3270_PrintScreen, SYM_Print, SYM_Return, SYM_SunPrint_Screen, SYM_Super_L,
-                SYM_b, SYM_bracketleft, SYM_bracketright, SYM_c, SYM_d, SYM_f, SYM_h, SYM_i, SYM_j,
-                SYM_k, SYM_l, SYM_m, SYM_o, SYM_p, SYM_q, SYM_r, SYM_slash, SYM_t, SYM_u, SYM_v,
+                SYM_Return, SYM_a, SYM_bracketleft, SYM_bracketright, SYM_d, SYM_f, SYM_h, SYM_i,
+                SYM_j, SYM_k, SYM_l, SYM_m, SYM_p, SYM_q, SYM_r, SYM_slash, SYM_t, SYM_u, SYM_v,
                 SYM_x, SYM_y, SYM_1, SYM_2, SYM_3, SYM_4, SYM_5, SYM_6, SYM_F1, SYM_F10, SYM_F11,
                 SYM_F12, SYM_F2, SYM_F3, SYM_F4, SYM_F5, SYM_F6, SYM_F7, SYM_F8, SYM_F9,
             },
@@ -31,6 +26,7 @@ use {
         status::set_status,
         switch_to_vt,
         timer::{duration_until_wall_clock_is_multiple_of, get_timer},
+        video::drm_devices,
         video::on_graphics_initialized,
         Axis::{Horizontal, Vertical},
         Direction::{Down, Left, Right, Up},
@@ -41,68 +37,104 @@ use {
     },
 };
 
-const MOD: Modifiers = MOD4;
+fn arrange_outputs(reason: &str) {
+    println!("configuring outputs... {}", reason);
+    let display = get_connector("HDMI-A-1");
+    let laptop = get_connector("eDP-1");
+    if laptop.connected() && display.connected() {
+        display.set_position(0, 0);
+        laptop.set_enabled(false);
+    } else if laptop.connected() && !display.connected() {
+        laptop.set_enabled(true);
+        laptop.set_position(0, 0);
+    } else if display.connected() && !laptop.connected() {
+        display.set_enabled(true);
+        display.set_position(0, 0);
+    }
+}
 
-fn configure_seat(s: Seat) {
-    s.bind(MOD | SYM_h, move || s.focus(Left));
-    s.bind(MOD | SYM_j, move || s.focus(Down));
-    s.bind(MOD | SYM_k, move || s.focus(Up));
-    s.bind(MOD | SYM_l, move || s.focus(Right));
+fn setup_outputs() {
+    on_new_connector(move |_| arrange_outputs("on_new_connector"));
+    on_connector_connected(move |_| arrange_outputs("oon_connector_connect4ed"));
+    arrange_outputs("initial setup");
+}
 
-    s.bind(MOD | SHIFT | SYM_h, move || s.move_(Left));
-    s.bind(MOD | SHIFT | SYM_j, move || s.move_(Down));
-    s.bind(MOD | SHIFT | SYM_k, move || s.move_(Up));
-    s.bind(MOD | SHIFT | SYM_l, move || s.move_(Right));
+fn configure_seat(s: Seat, m: Modifiers) {
+    let keymap_str = include_str!("keymap.xkb");
+    let keymap = parse_keymap(keymap_str);
+    log::warn!("keymap: {:#?}", keymap);
+    println!("twh; keymap is {:#?}", keymap_str);
+    println!("twh; keymap is {:#?}", keymap);
+    s.set_keymap(keymap);
 
-    s.bind(MOD | SYM_d, move || s.create_split(Horizontal));
-    s.bind(MOD | SYM_v, move || s.create_split(Vertical));
+    s.bind(m | SYM_a, move || {
+        Command::new("rofi").arg("-show").arg("run").spawn()
+    });
+    s.bind(m | SYM_h, move || s.focus(Left));
+    s.bind(m | SYM_j, move || s.focus(Down));
+    s.bind(m | SYM_k, move || s.focus(Up));
+    s.bind(m | SYM_l, move || s.focus(Right));
 
-    s.bind(MOD | SYM_t, move || s.toggle_split());
-    s.bind(MOD | SYM_m, move || s.toggle_mono());
-    s.bind(MOD | SYM_u, move || s.toggle_fullscreen());
+    s.bind(m | SHIFT | SYM_h, move || s.move_(Left));
+    s.bind(m | SHIFT | SYM_j, move || s.move_(Down));
+    s.bind(m | SHIFT | SYM_k, move || s.move_(Up));
+    s.bind(m | SHIFT | SYM_l, move || s.move_(Right));
 
-    s.bind(MOD | SYM_f, move || s.focus_parent());
+    s.bind(m | SYM_d, move || s.create_split(Horizontal));
+    s.bind(m | SYM_v, move || s.create_split(Vertical));
 
-    s.bind(MOD | SHIFT | SYM_q, move || s.close());
+    s.bind(m | SYM_t, move || s.toggle_split());
+    s.bind(m | SYM_m, move || s.toggle_mono());
+    s.bind(m | SYM_u, move || s.toggle_fullscreen());
 
-    s.bind(MOD | SHIFT | SYM_f, move || s.toggle_floating());
+    s.bind(m | SYM_f, move || s.focus_parent());
 
-    s.bind(MOD | SHIFT | SYM_Return, || Command::new("alacritty").spawn());
+    s.bind(m | SHIFT | SYM_q, move || s.close());
 
-    s.bind(MOD | SYM_p, || Command::new("fuzzel").spawn());
+    s.bind(m | SHIFT | SYM_f, move || s.toggle_floating());
 
-    s.bind(MOD | SYM_bracketleft, || {
+    s.bind(m | SHIFT | SYM_Return, || {
+        Command::new("alacritty")
+            .arg("-e")
+            .arg("tmux")
+            .arg("attach")
+            .arg("-t ")
+            .arg("-config")
+            .spawn()
+    });
+
+    s.bind(m | SYM_p, || Command::new("fuzzel").spawn());
+
+    s.bind(m | SYM_bracketleft, || {
         Command::new("tessen").arg("-d").arg("fuzzel").spawn()
     });
 
-    s.bind(MOD | SYM_bracketright, || {
+    s.bind(m | SYM_bracketright, || {
         Command::new("/home/uncomfy/.config/river/book.nu").spawn()
     });
 
-    s.bind(MOD | SYM_slash, || {
+    s.bind(m | SYM_slash, || {
         Command::new("/home/uncomfy/.config/river/fnottctl_list.sh").spawn()
     });
 
-    s.bind(MOD | SHIFT | SYM_i, || {
+    s.bind(m | SHIFT | SYM_i, || {
         Command::new("/home/uncomfy/.config/river/nubrowser.nu").spawn()
     });
 
-    s.bind(MOD | SYM_i, || {
+    s.bind(m | SYM_i, || {
         Command::new("/home/uncomfy/.config/river/firefoxprofiles.nu").spawn()
     });
 
     // Screenshot will not work yet. Jay screenshot does :)
 
-    s.bind(MOD | SHIFT | SYM_y, || {
-        Command::new("yt-cli.nu").spawn()
-    });
+    s.bind(m | SHIFT | SYM_y, || Command::new("yt-cli.nu").spawn());
 
-    s.bind(MOD | SYM_x, quit);
+    s.bind(m | SYM_x, quit);
 
-    s.bind(MOD | SHIFT | SYM_r, reload);
+    s.bind(m | SHIFT | SYM_r, reload);
 
-   let use_hc = Cell::new(true);
-    s.bind(MOD | SHIFT | SYM_m, move || {
+    let use_hc = Cell::new(true);
+    s.bind(m | SHIFT | SYM_m, move || {
         let hc = !use_hc.get();
         use_hc.set(hc);
         log::info!("use hc = {}", hc);
@@ -121,33 +153,33 @@ fn configure_seat(s: Seat) {
     let numkeys = [SYM_1, SYM_2, SYM_3, SYM_4, SYM_5, SYM_6];
     for (i, sym) in numkeys.into_iter().enumerate() {
         let ws = get_workspace(&format!("{}", i + 1));
-        s.bind(MOD | sym, move || s.show_workspace(ws));
-        s.bind(MOD | SHIFT | sym, move || {
+        s.bind(m | sym, move || s.show_workspace(ws));
+        s.bind(m | SHIFT | sym, move || {
             s.set_workspace(ws);
             s.show_workspace(ws);
         });
     }
 
-    fn do_grab(s: Seat, grab: bool) {
-        for device in s.input_devices() {
-            if device.has_capability(CAP_KEYBOARD) {
-                log::info!(
-                    "{}rabbing keyboard {:?}",
-                    if grab { "G" } else { "Ung" },
-                    device.0
-                );
-                grab_input_device(device, grab);
-            }
-        }
-        if grab {
-            s.unbind(SYM_y);
-            s.bind(MOD | SYM_b, move || do_grab(s, false));
-        } else {
-            s.unbind(MOD | SYM_b);
-            s.bind(SYM_y, move || do_grab(s, true));
-        }
-    }
-    do_grab(s, false);
+    // fn do_grab(s: Seat, grab: bool) {
+    //     for device in s.input_devices() {
+    //         if device.has_capability(CAP_KEYBOARD) {
+    //             log::info!(
+    //                 "{}rabbing keyboard {:?}",
+    //                 if grab { "G" } else { "Ung" },
+    //                 device.0
+    //             );
+    //             grab_input_device(device, grab);
+    //         }
+    //     }
+    //     if grab {
+    //         s.unbind(SYM_y);
+    //         s.bind(m | SYM_b, move || do_grab(s, false));
+    //     } else {
+    //         s.unbind(m | SYM_b);
+    //         s.bind(SYM_y, move || do_grab(s, true));
+    //     }
+    // }
+    // do_grab(s, false);
 }
 
 // fn check_battery() -> battery::Result<()> {
@@ -226,13 +258,15 @@ fn setup_status() -> Result<(), battery::Error> {
 pub fn configure() {
     // Configure seats and input devices
     let seat = get_seat("default");
-    configure_seat(seat);
+    configure_seat(seat, MOD4);
+    configure_seat(seat, MOD5);
+    setup_outputs();
     let handle_input_device = move |device: InputDevice| {
-        if device.has_capability(CAP_POINTER) {
-            device.set_left_handed(false);
-            device.set_transform_matrix([[0.35, 0.0], [0.0, 0.35]]);
-        }
-        device.set_tap_enabled(true);
+        // if device.has_capability(CAP_POINTER) {
+        //     device.set_left_handed(false);
+        //     device.set_transform_matrix([[0.35, 0.0], [0.0, 0.35]]);
+        // }
+        // device.set_tap_enabled(true);
         device.set_seat(seat);
     };
     input_devices().into_iter().for_each(handle_input_device);
@@ -257,11 +291,32 @@ pub fn configure() {
             .arg("XDG_CURRENT_DESKTOP=jay")
             .spawn();
         Command::new("/usr/libexec/polkit-kde-authentication-agent-1").spawn();
-        Command::new("fnott").spawn();
+        Command::new("alacritty")
+            .arg("-e")
+            .arg("tmux")
+            .arg("attach")
+            .arg("-t")
+            .arg("jay-config")
+            .spawn();
         Command::new("wbg")
             .arg("/home/uncomfy/.config/river/backgrounds/romb.png")
             .spawn();
+        println!("twh; running DRM stuff");
+        drm_devices().iter().for_each(handle_drm_device);
     });
+}
+
+fn handle_drm_device(d: &DrmDevice) {
+    println!("{}: {}", d.model(), d.vendor());
+    for c in d.connectors() {
+        println!(
+            "{} {} {:?} {:?}",
+            c.exists(),
+            c.connected(),
+            c.ty(),
+            c.mode()
+        );
+    }
 }
 
 config!(configure);
