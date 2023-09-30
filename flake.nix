@@ -1,26 +1,59 @@
 {
-  description = "virtual environments";
-
-  inputs.devshell.url = "github:numtide/devshell";
-  inputs.flake-utils.url = "github:numtide/flake-utils";
-
-  inputs.flake-compat = {
-    url = "github:edolstra/flake-compat";
-    flake = false;
+  inputs = {
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+    systems.url = "github:nix-systems/default";
+    devenv.url = "github:cachix/devenv";
   };
 
-  outputs = { self, flake-utils, devshell, nixpkgs, ... }:
-    flake-utils.lib.eachDefaultSystem (system: {
-      devShell =
-        let
-          pkgs = import nixpkgs {
-            inherit system;
+  nixConfig = {
+    extra-trusted-public-keys = "devenv.cachix.org-1:w1cLUi8dv3hnoSPGAuibQv+f9TZLr6cv/Hm9XgU50cw=";
+    extra-substituters = "https://devenv.cachix.org";
+  };
 
-            overlays = [ devshell.overlays.default ];
-          };
-        in
-        pkgs.devshell.mkShell {
-          imports = [ (pkgs.devshell.importTOML ./devshell.toml) ];
-        };
-    });
+  outputs = { self, nixpkgs, devenv, systems, ... } @ inputs:
+    let
+      forEachSystem = nixpkgs.lib.genAttrs (import systems);
+    in
+    {
+      devShells = forEachSystem
+        (system:
+          let
+            pkgs = nixpkgs.legacyPackages.${system};
+          in
+          {
+            default = devenv.lib.mkShell {
+              inherit inputs pkgs;
+              modules = [
+                {
+                  # https://devenv.sh/reference/options/
+                  packages = with pkgs; [ 
+                    libxkbcommon
+                    mesa
+                    pango
+                    cairo
+                    udev
+                    libinput
+                    libGL
+                    glib
+                    # egl-wayland
+                  ] ++ lib.optionals pkgs.stdenv.isDarwin (with pkgs.darwin.apple_sdk; [ frameworks.Security ]);
+                  languages.rust = {
+                    enable = true;
+                    components = [ "rustc" "cargo" "clippy" "rustfmt" "rust-analyzer" ];
+                    # channel = "nightly";
+                  };
+
+                  pre-commit.hooks = {
+                    rustfmt.enable = true;
+                    clippy.enable = true;
+                  };
+
+                  enterShell = ''
+                    cargo --version
+                  '';
+                }
+              ];
+            };
+          });
+    };
 }
